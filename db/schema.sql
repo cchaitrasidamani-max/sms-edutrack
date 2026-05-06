@@ -1,12 +1,12 @@
 -- ================================
 -- DATABASE
 -- ================================
-CREATE DATABASE IF NOT EXISTS sms_db;;
+CREATE DATABASE IF NOT EXISTS ${MYSQL_DATABASE};;
 
-{/*CREATE USER IF NOT EXISTS csuser@localhost IDENTIFIED BY 'mysql@123';
+CREATE USER IF NOT EXISTS ${MYSQL_USER}@localhost IDENTIFIED BY '${MYSQL_PASSWORD}';
 
-GRANT ALL PRIVILEGES ON sms_db.* TO csuser@localhost;
-FLUSH PRIVILEGES;*/}
+GRANT ALL PRIVILEGES ON ${MYSQL_DATABASE}.* TO ${MYSQL_USER}@localhost;
+FLUSH PRIVILEGES;
 
 -- ================================
 -- ROLES TABLE
