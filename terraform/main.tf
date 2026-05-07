@@ -33,8 +33,8 @@ resource "aws_security_group" "sms_sg" {
   }
 
   ingress {
-    from_port   = 3000
-    to_port     = 3000
+    from_port   = 8080
+    to_port     = 8080
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -47,8 +47,8 @@ resource "aws_security_group" "sms_sg" {
   }
 
   ingress {
-    from_port   = 9090
-    to_port     = 9090
+    from_port   = 3000
+    to_port     = 3000
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -64,7 +64,14 @@ resource "aws_security_group" "sms_sg" {
     from_port   = 3306
     to_port     = 3306
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]  # For MySQL, restrict in production
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
@@ -77,13 +84,12 @@ resource "aws_security_group" "sms_sg" {
 
 resource "aws_iam_role" "ssm_role" {
   name = "sms-ssm-role"
-
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
+        Action    = "sts:AssumeRole"
+        Effect    = "Allow"
         Principal = {
           Service = "ec2.amazonaws.com"
         }
@@ -97,30 +103,65 @@ resource "aws_iam_role_policy_attachment" "ssm_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+resource "aws_iam_role_policy_attachment" "s3_policy" {
+  role       = aws_iam_role.ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
+}
+
 resource "aws_iam_instance_profile" "ssm_profile" {
   name = "sms-ssm-profile"
   role = aws_iam_role.ssm_role.name
 }
 
 resource "aws_instance" "sms_instance" {
-  ami           = "ami-0c7217cdde317cfec"  # Ubuntu 22.04 LTS in us-east-1
-  instance_type = var.instance_type
-  key_name      = var.key_name
+  ami                    = "ami-0c7217cdde317cfec"  # Ubuntu 22.04 LTS us-east-1
+  instance_type          = var.instance_type
+  key_name               = var.key_name
+  security_groups        = [aws_security_group.sms_sg.name]
+  iam_instance_profile   = aws_iam_instance_profile.ssm_profile.name
 
-  security_groups = [aws_security_group.sms_sg.name]
-  iam_instance_profile = aws_iam_instance_profile.ssm_profile.name
+  user_data = <<-EOT
+    #!/bin/bash
+    set -e
+    exec > /var/log/user-data.log 2>&1
 
-  user_data = <<-EOF
-              #!/bin/bash
-              apt-get update
-              apt-get install -y docker.io docker-compose-plugin awscli
-              systemctl start docker
-              systemctl enable docker
-              wget https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb
-              dpkg -i amazon-ssm-agent.deb
-              systemctl enable amazon-ssm-agent
-              systemctl start amazon-ssm-agent
-              EOF
+    echo "=== Starting user-data script ==="
+
+    # Update system
+    apt-get update -y
+
+    # Install dependencies
+    apt-get install -y ca-certificates curl gnupg lsb-release unzip
+
+    # Add Docker's official GPG key
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+    # Add Docker repository
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+    # Install Docker
+    apt-get update -y
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+    # Start and enable Docker
+    systemctl start docker
+    systemctl enable docker
+
+    # Add ubuntu user to docker group
+    usermod -aG docker ubuntu
+
+    # Install AWS CLI v2
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+    unzip /tmp/awscliv2.zip -d /tmp
+    /tmp/aws/install
+
+    # SSM agent already installed via snap on Ubuntu 22.04 — just enable it
+    systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service || true
+    systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service || true
+
+    echo "=== user-data script completed successfully ==="
+  EOT
 
   tags = {
     Name = "SMS-Application"
