@@ -7,7 +7,7 @@ variable "region" {
 }
 
 variable "instance_type" {
-  default = "m7i-flex.large"
+  default = "t3.medium"
 }
 
 variable "key_name" {
@@ -114,7 +114,7 @@ resource "aws_iam_instance_profile" "ssm_profile" {
 }
 
 resource "aws_instance" "sms_instance" {
-  ami                  = "ami-0c7217cdde317cfec"  # Ubuntu 22.04 LTS us-east-1
+  ami                  = "ami-0c7217cdde317cfec"
   instance_type        = var.instance_type
   key_name             = var.key_name
   security_groups      = [aws_security_group.sms_sg.name]
@@ -130,43 +130,41 @@ resource "aws_instance" "sms_instance" {
     set -e
     exec > /var/log/user-data.log 2>&1
 
-    echo "=== Starting setup ==="
+    echo "=== Starting EC2 setup ==="
     apt-get update -y
+    apt-get install -y unzip curl
 
-    # Install Java 21
+    echo "=== Installing Java 21 ==="
     apt-get install -y openjdk-21-jdk
     java -version
 
-    # Install MySQL
+    echo "=== Installing MySQL ==="
     apt-get install -y mysql-server
     systemctl start mysql
     systemctl enable mysql
-
-    # Secure MySQL - allow root login without password for setup
     mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '';"
     mysql -u root -e "FLUSH PRIVILEGES;"
 
-    # Install Nginx
+    echo "=== Installing Nginx ==="
     apt-get install -y nginx
     systemctl start nginx
     systemctl enable nginx
 
-    # Install AWS CLI v2
-    apt-get install -y unzip curl
+    echo "=== Installing AWS CLI ==="
     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
     unzip /tmp/awscliv2.zip -d /tmp
     /tmp/aws/install
     aws --version
 
-    # Enable SSM agent (already installed via snap on Ubuntu 22.04)
+    echo "=== Enabling SSM Agent ==="
     systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service || true
     systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service || true
 
-    echo "=== Setup complete ==="
+    echo "=== EC2 setup complete ==="
   EOT
 
   tags = {
-    Name = "SMS-Application3"
+    Name = "SMS-Application"
   }
 }
 

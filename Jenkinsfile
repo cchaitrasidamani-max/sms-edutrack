@@ -93,6 +93,76 @@ pipeline {
             }
         }
 
+        stage('Create Deploy Script') {
+            steps {
+                sh """
+                    cat > /tmp/deploy.sh << 'DEPLOYEOF'
+#!/bin/bash
+set -e
+export AWS_DEFAULT_REGION=us-east-1
+cd /home/ubuntu
+
+echo "=== Downloading files from S3 ==="
+aws s3 cp s3://${env.S3_BUCKET}/.env /home/ubuntu/.env
+aws s3 cp s3://${env.S3_BUCKET}/schema.sql /home/ubuntu/schema.sql
+aws s3 cp s3://${env.S3_BUCKET}/app.jar /home/ubuntu/app.jar
+aws s3 cp --recursive s3://${env.S3_BUCKET}/frontend /home/ubuntu/frontend
+
+echo "=== Updating CORS with actual instance IP ==="
+sed -i 's|APP_CORS_ALLOWED_ORIGINS=.*|APP_CORS_ALLOWED_ORIGINS=http://${env.INSTANCE_IP}|' /home/ubuntu/.env
+
+echo "=== Loading environment variables ==="
+set -a
+source /home/ubuntu/.env
+set +a
+
+echo "=== Setting up MySQL ==="
+mysql -u root -e "CREATE DATABASE IF NOT EXISTS smsdb;"
+mysql -u root -e "CREATE USER IF NOT EXISTS '\$SPRING_DATASOURCE_USERNAME'@'localhost' IDENTIFIED BY '\$SPRING_DATASOURCE_PASSWORD';"
+mysql -u root -e "GRANT ALL PRIVILEGES ON smsdb.* TO '\$SPRING_DATASOURCE_USERNAME'@'localhost'; FLUSH PRIVILEGES;"
+mysql -u root smsdb < /home/ubuntu/schema.sql
+
+echo "=== Starting Spring Boot Backend on port 8082 ==="
+pkill -f 'app.jar' || true
+sleep 3
+nohup java -jar /home/ubuntu/app.jar > /var/log/backend.log 2>&1 &
+echo "Backend started with PID: \$!"
+sleep 10
+curl -s http://localhost:8082/actuator/health || echo "Backend still starting..."
+
+echo "=== Deploying Frontend to Nginx ==="
+cp -r /home/ubuntu/frontend/* /var/www/html/
+
+cat > /etc/nginx/sites-available/default << NGINXEOF
+server {
+    listen 80;
+    root /var/www/html;
+    index index.html;
+
+    location / {
+        try_files \\\$uri \\\$uri/ /index.html;
+    }
+
+    location /api {
+        proxy_pass http://localhost:8082;
+        proxy_set_header Host \\\$host;
+        proxy_set_header X-Real-IP \\\$remote_addr;
+        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
+    }
+}
+NGINXEOF
+
+nginx -t && systemctl restart nginx
+echo "=== Deployment complete! ==="
+DEPLOYEOF
+
+                    echo "Deploy script created"
+                    aws s3 cp /tmp/deploy.sh s3://${env.S3_BUCKET}/deploy.sh
+                    echo "Deploy script uploaded to S3"
+                """
+            }
+        }
+
         stage('Wait for Instance Ready') {
             steps {
                 sh """
@@ -136,63 +206,7 @@ pipeline {
                         --document-name "AWS-RunShellScript" \
                         --region us-east-1 \
                         --timeout-seconds 600 \
-                        --parameters commands="
-                            set -e
-                            export AWS_DEFAULT_REGION=us-east-1
-                            cd /home/ubuntu
-
-                            echo '=== Downloading files from S3 ==='
-                            aws s3 cp s3://${env.S3_BUCKET}/.env /home/ubuntu/.env
-                            aws s3 cp s3://${env.S3_BUCKET}/schema.sql /home/ubuntu/schema.sql
-                            aws s3 cp s3://${env.S3_BUCKET}/app.jar /home/ubuntu/app.jar
-                            aws s3 cp --recursive s3://${env.S3_BUCKET}/frontend /home/ubuntu/frontend
-
-                            echo '=== Updating CORS with actual instance IP ==='
-                            sed -i 's|APP_CORS_ALLOWED_ORIGINS=.*|APP_CORS_ALLOWED_ORIGINS=http://${env.INSTANCE_IP}|' /home/ubuntu/.env
-
-                            echo '=== Loading environment variables ==='
-                            set -a
-                            source /home/ubuntu/.env
-                            set +a
-
-                            echo '=== Setting up MySQL ==='
-                            mysql -u root -e 'CREATE DATABASE IF NOT EXISTS smsdb;'
-                            mysql -u root -e \\\"CREATE USER IF NOT EXISTS '\\\$SPRING_DATASOURCE_USERNAME'@'localhost' IDENTIFIED BY '\\\$SPRING_DATASOURCE_PASSWORD';\\\"
-                            mysql -u root -e \\\"GRANT ALL PRIVILEGES ON smsdb.* TO '\\\$SPRING_DATASOURCE_USERNAME'@'localhost'; FLUSH PRIVILEGES;\\\"
-                            mysql -u root smsdb < /home/ubuntu/schema.sql
-
-                            echo '=== Starting Spring Boot Backend on port 8082 ==='
-                            pkill -f 'app.jar' || true
-                            sleep 3
-                            nohup java -jar /home/ubuntu/app.jar \
-                                > /var/log/backend.log 2>&1 &
-                            echo 'Backend started with PID:'\$!
-                            sleep 10
-                            curl -s http://localhost:8082/actuator/health || echo 'Backend still starting...'
-
-                            echo '=== Deploying Frontend to Nginx ==='
-                            cp -r /home/ubuntu/frontend/* /var/www/html/
-                            cat > /etc/nginx/sites-available/default << 'NGINXCONF'
-server {
-    listen 80;
-    root /var/www/html;
-    index index.html;
-
-    location / {
-        try_files \\\$uri \\\$uri/ /index.html;
-    }
-
-    location /api {
-        proxy_pass http://localhost:8082;
-        proxy_set_header Host \\\$host;
-        proxy_set_header X-Real-IP \\\$remote_addr;
-        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
-    }
-}
-NGINXCONF
-                            nginx -t && systemctl restart nginx
-
-                            echo '=== Deployment complete! ==='" \
+                        --parameters commands="aws s3 cp s3://${env.S3_BUCKET}/deploy.sh /home/ubuntu/deploy.sh && chmod +x /home/ubuntu/deploy.sh && bash /home/ubuntu/deploy.sh" \
                         --query "Command.CommandId" \
                         --output text)
 
