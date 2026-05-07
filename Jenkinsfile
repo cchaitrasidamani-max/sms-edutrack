@@ -2,9 +2,9 @@ pipeline {
     agent any
 
     environment {
-        AWS_ACCESS_KEY_ID = credentials('aws-access-key-id')
-        AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')
-        TF_VAR_key_name = 'your-key-pair-name'  // Replace with your key pair name
+        AWS_ACCESS_KEY_ID = credentials('')
+        AWS_SECRET_ACCESS_KEY = credentials('')
+        TF_VAR_key_name = 'SMS-Production-Server'  // Replace with your key pair name
     }
 
     stages {
