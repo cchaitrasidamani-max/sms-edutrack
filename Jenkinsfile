@@ -2,9 +2,10 @@ pipeline {
     agent any
 
     environment {
-        AWS_ACCESS_KEY_ID = credentials('')
-        AWS_SECRET_ACCESS_KEY = credentials('')
+        AWS_ACCESS_KEY_ID = credentials('aws-access-key-id')  // Jenkins credential ID
+        AWS_SECRET_ACCESS_KEY = credentials('aws-secret-access-key')  // Jenkins credential ID
         TF_VAR_key_name = 'SMS-Production-Server'  // Replace with your key pair name
+        ENV_FILE = credentials('sms-env-file')  // Jenkins secret file credential for .env
     }
 
     stages {
@@ -67,6 +68,10 @@ pipeline {
 
         stage('Upload to S3') {
             steps {
+                // Copy the .env file from Jenkins secret
+                sh "cp ${ENV_FILE} .env"
+                
+                sh "aws s3 cp .env s3://${env.S3_BUCKET}/.env"
                 sh "aws s3 cp docker-compose.yml s3://${env.S3_BUCKET}/"
                 sh "aws s3 cp --recursive backend_modified s3://${env.S3_BUCKET}/backend_modified/"
                 sh "aws s3 cp --recursive frontend s3://${env.S3_BUCKET}/frontend/"
@@ -74,7 +79,7 @@ pipeline {
                 sh "aws s3 cp db/schema.sql s3://${env.S3_BUCKET}/schema.sql"
             }
         }
-
+.env . && aws s3 cp s3://${env.S3_BUCKET}/
         stage('Deploy via SSM') {
             steps {
                 sh """

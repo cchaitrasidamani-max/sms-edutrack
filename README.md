@@ -103,6 +103,72 @@ npm run dev
 
 ---
 
+## Production Deployment
+
+### Prerequisites
+- AWS Account with IAM permissions for EC2, S3, SSM
+- Jenkins server with AWS credentials configured
+- SSH key pair for EC2 access
+
+### Environment Setup
+
+1. **Copy environment template:**
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Configure secrets in `.env`:**
+   ```bash
+   # Database
+   MYSQL_ROOT_PASSWORD=your_secure_password
+   MYSQL_USER=smsuser
+   MYSQL_PASSWORD=your_secure_password
+   MYSQL_DATABASE=sms_db
+
+   # JWT
+   APP_JWT_SECRET=your-256-bit-super-secure-jwt-secret-key
+   APP_JWT_EXPIRATION=86400000
+
+   # Grafana
+   GF_SECURITY_ADMIN_PASSWORD=your_secure_password
+
+   # CORS (update for production domain)
+   APP_CORS_ALLOWED_ORIGINS=https://yourdomain.com
+   ```
+
+### Jenkins Pipeline Setup
+
+1. **Configure AWS Credentials in Jenkins:**
+   - Go to Jenkins → Credentials → System → Global credentials
+   - Add AWS Access Key ID as `aws-access-key-id`
+   - Add AWS Secret Access Key as `aws-secret-access-key`
+
+2. **Update Jenkinsfile:**
+   - Replace `your-repo` with your GitHub repository URL
+   - Update `TF_VAR_key_name` with your AWS key pair name
+
+3. **Run Pipeline:**
+   The pipeline will automatically:
+   - Build backend and frontend
+   - Create AWS infrastructure (EC2 + S3) via Terraform
+   - Deploy application using Docker Compose
+   - Configure monitoring (Prometheus + Grafana)
+
+### AWS Resources Created
+
+- **EC2 Instance:** Ubuntu 22.04 with Docker + SSM Agent
+- **S3 Bucket:** Auto-generated name for deployment artifacts
+- **Security Groups:** Open ports for web access
+- **IAM Role:** SSM managed instance core for remote management
+
+### Access Points
+
+- **Application:** `http://<instance-public-ip>`
+- **Grafana:** `http://<instance-public-ip>:3001` (admin/admin)
+- **Prometheus:** `http://<instance-public-ip>:9090`
+
+---
+
 ## Default Credentials (auto-seeded)
 
 | Role    | Username  | Password    |
