@@ -166,7 +166,7 @@ resource "aws_instance" "sms_instance" {
   EOT
 
   tags = {
-    Name = "SMS-Application2"
+    Name = "SMS-Application3"
   }
 }
 

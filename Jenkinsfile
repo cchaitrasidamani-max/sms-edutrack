@@ -77,11 +77,18 @@ pipeline {
             steps {
                 sh """
                     cp \${ENV_FILE} .env
+
                     aws s3 cp .env s3://${env.S3_BUCKET}/.env
                     aws s3 cp db/schema.sql s3://${env.S3_BUCKET}/schema.sql
-                    aws s3 cp --recursive backend_modified s3://${env.S3_BUCKET}/backend_modified/
-                    aws s3 cp --recursive frontend s3://${env.S3_BUCKET}/frontend/
+
+                    aws s3 cp backend_modified/target/student-management-system-1.0.0.jar \
+                        s3://${env.S3_BUCKET}/app.jar
+
+                    aws s3 cp --recursive frontend/dist s3://${env.S3_BUCKET}/frontend/
                     aws s3 cp --recursive monitoring s3://${env.S3_BUCKET}/monitoring/
+
+                    echo "=== S3 upload complete ==="
+                    aws s3 ls s3://${env.S3_BUCKET}/
                 """
             }
         }
@@ -89,18 +96,32 @@ pipeline {
         stage('Wait for Instance Ready') {
             steps {
                 sh """
-                    echo "Waiting for EC2 instance to finish setup..."
-                    sleep 120
-                    aws ssm wait command-executed \
-                        --instance-id ${env.INSTANCE_ID} \
-                        --command-id \$(aws ssm send-command \
-                            --instance-ids ${env.INSTANCE_ID} \
-                            --document-name "AWS-RunShellScript" \
-                            --parameters commands="echo ready" \
+                    echo "Waiting 300 seconds for EC2 user-data to complete..."
+                    sleep 300
+
+                    echo "Checking SSM agent status..."
+                    for i in 1 2 3 4 5; do
+                        STATUS=\$(aws ssm describe-instance-information \
+                            --filters "Key=InstanceIds,Values=${env.INSTANCE_ID}" \
                             --region us-east-1 \
-                            --query "Command.CommandId" \
-                            --output text) \
-                        --region us-east-1 || true
+                            --query "InstanceInformationList[0].PingStatus" \
+                            --output text 2>/dev/null || echo "None")
+
+                        echo "Attempt \$i: SSM Status = \$STATUS"
+
+                        if [ "\$STATUS" = "Online" ]; then
+                            echo "SSM agent is online and ready!"
+                            break
+                        fi
+
+                        if [ \$i -eq 5 ]; then
+                            echo "SSM agent never came online after 5 attempts"
+                            exit 1
+                        fi
+
+                        echo "SSM not ready yet, waiting 30 more seconds..."
+                        sleep 30
+                    done
                 """
             }
         }
@@ -108,42 +129,49 @@ pipeline {
         stage('Deploy via SSM') {
             steps {
                 sh """
-                    aws ssm send-command \
+                    echo "Sending deploy command via SSM..."
+
+                    COMMAND_ID=\$(aws ssm send-command \
                         --instance-ids ${env.INSTANCE_ID} \
                         --document-name "AWS-RunShellScript" \
                         --region us-east-1 \
                         --timeout-seconds 600 \
                         --parameters commands="
                             set -e
+                            export AWS_DEFAULT_REGION=us-east-1
                             cd /home/ubuntu
 
                             echo '=== Downloading files from S3 ==='
                             aws s3 cp s3://${env.S3_BUCKET}/.env /home/ubuntu/.env
                             aws s3 cp s3://${env.S3_BUCKET}/schema.sql /home/ubuntu/schema.sql
-                            aws s3 cp --recursive s3://${env.S3_BUCKET}/backend_modified /home/ubuntu/backend_modified
+                            aws s3 cp s3://${env.S3_BUCKET}/app.jar /home/ubuntu/app.jar
                             aws s3 cp --recursive s3://${env.S3_BUCKET}/frontend /home/ubuntu/frontend
 
+                            echo '=== Updating CORS with actual instance IP ==='
+                            sed -i 's|APP_CORS_ALLOWED_ORIGINS=.*|APP_CORS_ALLOWED_ORIGINS=http://${env.INSTANCE_IP}|' /home/ubuntu/.env
+
                             echo '=== Loading environment variables ==='
-                            export \\\$(cat /home/ubuntu/.env | grep -v '^#' | xargs)
+                            set -a
+                            source /home/ubuntu/.env
+                            set +a
 
                             echo '=== Setting up MySQL ==='
                             mysql -u root -e 'CREATE DATABASE IF NOT EXISTS smsdb;'
-                            mysql -u root -e \\\"CREATE USER IF NOT EXISTS '\\\$DB_USERNAME'@'localhost' IDENTIFIED BY '\\\$DB_PASSWORD';\\\"
-                            mysql -u root -e \\\"GRANT ALL PRIVILEGES ON smsdb.* TO '\\\$DB_USERNAME'@'localhost'; FLUSH PRIVILEGES;\\\"
+                            mysql -u root -e \\\"CREATE USER IF NOT EXISTS '\\\$SPRING_DATASOURCE_USERNAME'@'localhost' IDENTIFIED BY '\\\$SPRING_DATASOURCE_PASSWORD';\\\"
+                            mysql -u root -e \\\"GRANT ALL PRIVILEGES ON smsdb.* TO '\\\$SPRING_DATASOURCE_USERNAME'@'localhost'; FLUSH PRIVILEGES;\\\"
                             mysql -u root smsdb < /home/ubuntu/schema.sql
 
-                            echo '=== Starting Spring Boot Backend ==='
-                            pkill -f 'student-management-system' || true
+                            echo '=== Starting Spring Boot Backend on port 8082 ==='
+                            pkill -f 'app.jar' || true
                             sleep 3
-                            nohup java -jar /home/ubuntu/backend_modified/target/student-management-system-1.0.0.jar \
-                                --spring.datasource.url=jdbc:mysql://localhost:3306/smsdb \
-                                --spring.datasource.username=\\\$DB_USERNAME \
-                                --spring.datasource.password=\\\$DB_PASSWORD \
-                                --server.port=8080 \
+                            nohup java -jar /home/ubuntu/app.jar \
                                 > /var/log/backend.log 2>&1 &
+                            echo 'Backend started with PID:'\$!
+                            sleep 10
+                            curl -s http://localhost:8082/actuator/health || echo 'Backend still starting...'
 
-                            echo '=== Setting up Nginx for Frontend ==='
-                            cp -r /home/ubuntu/frontend/dist/* /var/www/html/
+                            echo '=== Deploying Frontend to Nginx ==='
+                            cp -r /home/ubuntu/frontend/* /var/www/html/
                             cat > /etc/nginx/sites-available/default << 'NGINXCONF'
 server {
     listen 80;
@@ -155,7 +183,7 @@ server {
     }
 
     location /api {
-        proxy_pass http://localhost:8080;
+        proxy_pass http://localhost:8082;
         proxy_set_header Host \\\$host;
         proxy_set_header X-Real-IP \\\$remote_addr;
         proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
@@ -164,12 +192,50 @@ server {
 NGINXCONF
                             nginx -t && systemctl restart nginx
 
-                            echo '=== Deployment complete! =='" \
-                        --output text
+                            echo '=== Deployment complete! ==='" \
+                        --query "Command.CommandId" \
+                        --output text)
+
+                    echo "SSM Command ID: \$COMMAND_ID"
+
+                    echo "Waiting for deployment to complete..."
+                    aws ssm wait command-executed \
+                        --command-id \$COMMAND_ID \
+                        --instance-id ${env.INSTANCE_ID} \
+                        --region us-east-1
+
+                    STATUS=\$(aws ssm get-command-invocation \
+                        --command-id \$COMMAND_ID \
+                        --instance-id ${env.INSTANCE_ID} \
+                        --region us-east-1 \
+                        --query "Status" \
+                        --output text)
+
+                    OUTPUT=\$(aws ssm get-command-invocation \
+                        --command-id \$COMMAND_ID \
+                        --instance-id ${env.INSTANCE_ID} \
+                        --region us-east-1 \
+                        --query "StandardOutputContent" \
+                        --output text)
+
+                    ERROR=\$(aws ssm get-command-invocation \
+                        --command-id \$COMMAND_ID \
+                        --instance-id ${env.INSTANCE_ID} \
+                        --region us-east-1 \
+                        --query "StandardErrorContent" \
+                        --output text)
+
+                    echo "Status:  \$STATUS"
+                    echo "Output:  \$OUTPUT"
+                    echo "Errors:  \$ERROR"
+
+                    if [ "\$STATUS" != "Success" ]; then
+                        echo "Deployment failed with status: \$STATUS"
+                        exit 1
+                    fi
                 """
             }
         }
-
     }
 
     post {
