@@ -83,7 +83,7 @@ resource "aws_security_group" "sms_sg" {
 }
 
 resource "aws_iam_role" "ssm_role" {
-  name = "sms-ssm-role"
+  name_prefix = "sms-ssm-role-"   # ← unique name every time, no conflicts
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -109,16 +109,16 @@ resource "aws_iam_role_policy_attachment" "s3_policy" {
 }
 
 resource "aws_iam_instance_profile" "ssm_profile" {
-  name = "sms-ssm-profile"
-  role = aws_iam_role.ssm_role.name
+  name_prefix = "sms-ssm-profile-"  # ← unique name every time, no conflicts
+  role        = aws_iam_role.ssm_role.name
 }
 
 resource "aws_instance" "sms_instance" {
-  ami                    = "ami-0c7217cdde317cfec"  # Ubuntu 22.04 LTS us-east-1
-  instance_type          = var.instance_type
-  key_name               = var.key_name
-  security_groups        = [aws_security_group.sms_sg.name]
-  iam_instance_profile   = aws_iam_instance_profile.ssm_profile.name
+  ami                  = "ami-0c7217cdde317cfec"  # Ubuntu 22.04 LTS us-east-1
+  instance_type        = var.instance_type
+  key_name             = var.key_name
+  security_groups      = [aws_security_group.sms_sg.name]
+  iam_instance_profile = aws_iam_instance_profile.ssm_profile.name
 
   user_data = <<-EOT
     #!/bin/bash
@@ -164,7 +164,7 @@ resource "aws_instance" "sms_instance" {
   EOT
 
   tags = {
-    Name = "SMS-Application"
+    Name = "SMS-Application1"
   }
 }
 
