@@ -83,7 +83,7 @@ resource "aws_security_group" "sms_sg" {
 }
 
 resource "aws_iam_role" "ssm_role" {
-  name_prefix = "sms-ssm-role-"   # ← unique name every time, no conflicts
+  name_prefix = "sms-ssm-role-"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -109,7 +109,7 @@ resource "aws_iam_role_policy_attachment" "s3_policy" {
 }
 
 resource "aws_iam_instance_profile" "ssm_profile" {
-  name_prefix = "sms-ssm-profile-"  # ← unique name every time, no conflicts
+  name_prefix = "sms-ssm-profile-"
   role        = aws_iam_role.ssm_role.name
 }
 
@@ -120,51 +120,53 @@ resource "aws_instance" "sms_instance" {
   security_groups      = [aws_security_group.sms_sg.name]
   iam_instance_profile = aws_iam_instance_profile.ssm_profile.name
 
+  root_block_device {
+    volume_size = 20
+    volume_type = "gp3"
+  }
+
   user_data = <<-EOT
     #!/bin/bash
     set -e
     exec > /var/log/user-data.log 2>&1
 
-    echo "=== Starting user-data script ==="
-
-    # Update system
+    echo "=== Starting setup ==="
     apt-get update -y
 
-    # Install dependencies
-    apt-get install -y ca-certificates curl gnupg lsb-release unzip
+    # Install Java 21
+    apt-get install -y openjdk-21-jdk
+    java -version
 
-    # Add Docker's official GPG key
-    mkdir -p /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    # Install MySQL
+    apt-get install -y mysql-server
+    systemctl start mysql
+    systemctl enable mysql
 
-    # Add Docker repository
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    # Secure MySQL - allow root login without password for setup
+    mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '';"
+    mysql -u root -e "FLUSH PRIVILEGES;"
 
-    # Install Docker
-    apt-get update -y
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-
-    # Start and enable Docker
-    systemctl start docker
-    systemctl enable docker
-
-    # Add ubuntu user to docker group
-    usermod -aG docker ubuntu
+    # Install Nginx
+    apt-get install -y nginx
+    systemctl start nginx
+    systemctl enable nginx
 
     # Install AWS CLI v2
+    apt-get install -y unzip curl
     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
     unzip /tmp/awscliv2.zip -d /tmp
     /tmp/aws/install
+    aws --version
 
-    # SSM agent already installed via snap on Ubuntu 22.04 — just enable it
+    # Enable SSM agent (already installed via snap on Ubuntu 22.04)
     systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service || true
     systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service || true
 
-    echo "=== user-data script completed successfully ==="
+    echo "=== Setup complete ==="
   EOT
 
   tags = {
-    Name = "SMS-Application1"
+    Name = "SMS-Application2"
   }
 }
 
